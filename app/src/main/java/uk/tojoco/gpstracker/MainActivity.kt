@@ -8,7 +8,11 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import uk.tojoco.gpstracker.data.AppDatabase
+import uk.tojoco.gpstracker.data.LocationEntity
 import com.google.android.gms.location.*
+import kotlinx.coroutines.*
+import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
@@ -16,14 +20,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var locationCallback: LocationCallback
     private lateinit var locationText: TextView
 
+    private var lastSavedTime: Long = 0
+    private lateinit var db: AppDatabase
+    private val saveIntervalMillis = 1 * 30 * 1000L // 30 seconds
+
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         locationText = TextView(this)
         setContentView(locationText)
 
+        db = AppDatabase.getDatabase(this)
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        // Permission request
         val requestPermissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) { isGranted: Boolean ->
@@ -34,7 +44,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Check for permission
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED
         ) {
@@ -46,16 +55,30 @@ class MainActivity : AppCompatActivity() {
 
     private fun startLocationUpdates() {
         val locationRequest = LocationRequest.create().apply {
-            interval = 5000 // Every 5 seconds
+            interval = 5000
             fastestInterval = 2000
             priority = LocationRequest.PRIORITY_HIGH_ACCURACY
         }
 
         locationCallback = object : LocationCallback() {
-            override fun onLocationResult(locationResult: LocationResult) {
-                for (location: Location in locationResult.locations) {
+            override fun onLocationResult(result: LocationResult) {
+                for (location: Location in result.locations) {
                     val text = "Lat: ${location.latitude}, Lng: ${location.longitude}"
                     locationText.text = text
+
+                    val now = System.currentTimeMillis()
+                    if (now - lastSavedTime >= saveIntervalMillis) {
+                        lastSavedTime = now
+                        scope.launch {
+                            db.locationDao().insert(
+                                LocationEntity(
+                                    latitude = location.latitude,
+                                    longitude = location.longitude,
+                                    timestamp = now
+                                )
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -74,5 +97,6 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         fusedLocationClient.removeLocationUpdates(locationCallback)
+        scope.cancel()
     }
 }
