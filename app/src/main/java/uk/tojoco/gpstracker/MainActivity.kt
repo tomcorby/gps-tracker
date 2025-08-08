@@ -4,44 +4,50 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Bundle
-import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import androidx.recyclerview.widget.LinearLayoutManager
 import uk.tojoco.gpstracker.data.AppDatabase
 import uk.tojoco.gpstracker.data.LocationEntity
+import uk.tojoco.gpstracker.databinding.ActivityMainBinding
+import uk.tojoco.gpstracker.ui.LocationAdapter
 import com.google.android.gms.location.*
 import kotlinx.coroutines.*
-import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
+    private lateinit var binding: ActivityMainBinding
+    private lateinit var db: AppDatabase
+    private lateinit var adapter: LocationAdapter
+
+    private val saveInterval = 5 * 60 * 1000L
+    private var lastSaved: Long = 0
+
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
-    private lateinit var locationText: TextView
 
-    private var lastSavedTime: Long = 0
-    private lateinit var db: AppDatabase
-    private val saveIntervalMillis = 1 * 30 * 1000L // 30 seconds
-
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        locationText = TextView(this)
-        setContentView(locationText)
+
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
         db = AppDatabase.getDatabase(this)
+
+        adapter = LocationAdapter(listOf())
+        binding.locationList.layoutManager = LinearLayoutManager(this)
+        binding.locationList.adapter = adapter
+
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         val requestPermissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestPermission()
-        ) { isGranted: Boolean ->
-            if (isGranted) {
-                startLocationUpdates()
-            } else {
-                locationText.text = "Location permission denied"
-            }
+        ) { isGranted ->
+            if (isGranted) startLocationUpdates()
+            else binding.locationText.text = "Location permission denied"
         }
 
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -51,10 +57,12 @@ class MainActivity : AppCompatActivity() {
         } else {
             startLocationUpdates()
         }
+
+        loadSavedLocations()
     }
 
     private fun startLocationUpdates() {
-        val locationRequest = LocationRequest.create().apply {
+        val request = LocationRequest.create().apply {
             interval = 5000
             fastestInterval = 2000
             priority = LocationRequest.PRIORITY_HIGH_ACCURACY
@@ -62,21 +70,19 @@ class MainActivity : AppCompatActivity() {
 
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
-                for (location: Location in result.locations) {
-                    val text = "Lat: ${location.latitude}, Lng: ${location.longitude}"
-                    locationText.text = text
+                for (location in result.locations) {
+                    val lat = location.latitude
+                    val lng = location.longitude
+                    binding.locationText.text = "Lat: $lat, Lng: $lng"
 
                     val now = System.currentTimeMillis()
-                    if (now - lastSavedTime >= saveIntervalMillis) {
-                        lastSavedTime = now
-                        scope.launch {
-                            db.locationDao().insert(
-                                LocationEntity(
-                                    latitude = location.latitude,
-                                    longitude = location.longitude,
-                                    timestamp = now
-                                )
-                            )
+                    if (now - lastSaved >= saveInterval) {
+                        lastSaved = now
+                        scope.launch(Dispatchers.IO) {
+                            db.locationDao().insert(LocationEntity(latitude = lat, longitude = lng, timestamp = now))
+                            withContext(Dispatchers.Main) {
+                                loadSavedLocations()
+                            }
                         }
                     }
                 }
@@ -86,11 +92,17 @@ class MainActivity : AppCompatActivity() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             == PackageManager.PERMISSION_GRANTED
         ) {
-            fusedLocationClient.requestLocationUpdates(
-                locationRequest,
-                locationCallback,
-                mainLooper
-            )
+            fusedLocationClient.requestLocationUpdates(request, locationCallback, mainLooper)
+        }
+    }
+
+    private fun loadSavedLocations() {
+        scope.launch {
+            val data = withContext(Dispatchers.IO) {
+                db.locationDao().getAll()
+            }
+            adapter = LocationAdapter(data)
+            binding.locationList.adapter = adapter
         }
     }
 

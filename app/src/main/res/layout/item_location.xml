@@ -2,32 +2,29 @@
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/main_layout"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:padding="16dp">
+    android:layout_height="wrap_content"
+    android:padding="8dp">
 
-    <!-- Current Location -->
     <TextView
-        android:id="@+id/location_text"
+        android:id="@+id/latlng_text"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="Lat: -, Lng: -"
-        android:textSize="18sp"
+        android:text="Lat: 0.0, Lng: 0.0"
+        android:textSize="16sp"
         android:textStyle="bold"
-        android:paddingBottom="12dp"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"/>
 
-    <!-- Stored Locations List -->
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/location_list"
+    <TextView
+        android:id="@+id/timestamp_text"
         android:layout_width="0dp"
-        android:layout_height="0dp"
-        android:clipToPadding="false"
-        app:layout_constraintTop_toBottomOf="@id/location_text"
-        app:layout_constraintBottom_toBottomOf="parent"
+        android:layout_height="wrap_content"
+        android:text="Time"
+        android:textSize="14sp"
+        android:textColor="#888888"
+        app:layout_constraintTop_toBottomOf="@id/latlng_text"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"/>
 
