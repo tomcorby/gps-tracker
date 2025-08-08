@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Bundle
+import android.content.Intent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -12,6 +13,7 @@ import uk.tojoco.gpstracker.data.AppDatabase
 import uk.tojoco.gpstracker.data.LocationEntity
 import uk.tojoco.gpstracker.databinding.ActivityMainBinding
 import uk.tojoco.gpstracker.ui.LocationAdapter
+import uk.tojoco.gpstracker.service.TrackingService
 import com.google.android.gms.location.*
 import kotlinx.coroutines.*
 
@@ -29,6 +31,19 @@ class MainActivity : AppCompatActivity() {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
+    private val requestPermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val fineGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+        val fgsGranted = permissions[Manifest.permission.FOREGROUND_SERVICE_LOCATION] ?: false
+
+        if (fineGranted && fgsGranted) {
+            startTracking()
+        } else {
+            binding.locationText.text = "Permissions denied."
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -43,22 +58,27 @@ class MainActivity : AppCompatActivity() {
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        val requestPermissionLauncher = registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { isGranted ->
-            if (isGranted) startLocationUpdates()
-            else binding.locationText.text = "Location permission denied"
-        }
-
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+        if (
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED ||
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.FOREGROUND_SERVICE_LOCATION)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            requestPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            requestPermissionsLauncher.launch(arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.FOREGROUND_SERVICE_LOCATION
+            ))
         } else {
-            startLocationUpdates()
+            startTracking()
         }
 
         loadSavedLocations()
+    }
+
+    private fun startTracking() {
+        val serviceIntent = Intent(this, TrackingService::class.java)
+        startForegroundService(serviceIntent)
+        startLocationUpdates()
     }
 
     private fun startLocationUpdates() {
@@ -79,7 +99,9 @@ class MainActivity : AppCompatActivity() {
                     if (now - lastSaved >= saveInterval) {
                         lastSaved = now
                         scope.launch(Dispatchers.IO) {
-                            db.locationDao().insert(LocationEntity(latitude = lat, longitude = lng, timestamp = now))
+                            db.locationDao().insert(
+                                LocationEntity(latitude = lat, longitude = lng, timestamp = now)
+                            )
                             withContext(Dispatchers.Main) {
                                 loadSavedLocations()
                             }
