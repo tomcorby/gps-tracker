@@ -16,12 +16,21 @@ import uk.tojoco.gpstracker.ui.LocationAdapter
 import uk.tojoco.gpstracker.service.TrackingService
 import com.google.android.gms.location.*
 import kotlinx.coroutines.*
+import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.MapView
+import com.google.android.gms.maps.OnMapReadyCallback
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.MarkerOptions
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), OnMapReadyCallback {
+
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var db: AppDatabase
     private lateinit var adapter: LocationAdapter
+    private lateinit var mapView: MapView
+    private var googleMap: GoogleMap? = null
 
     private val saveInterval = 5 * 60 * 1000L
     private var lastSaved: Long = 0
@@ -58,6 +67,10 @@ class MainActivity : AppCompatActivity() {
         binding.locationList.adapter = adapter
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
+        mapView = binding.mapView
+        mapView.onCreate(savedInstanceState)
+        mapView.getMapAsync(this)
 
         if (
             ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -119,8 +132,16 @@ class MainActivity : AppCompatActivity() {
                     val lat = location.latitude
                     val lng = location.longitude
                     binding.locationText.text = "Lat: $lat, Lng: $lng"
+                    googleMap?.let { map ->
+                        val position = LatLng(lat, lng)
+                        map.clear()
+                        map.addMarker(MarkerOptions().position(position).title("Current Location"))
+                        map.moveCamera(CameraUpdateFactory.newLatLngZoom(position, 15f))
+                    }
+
 
                     val now = System.currentTimeMillis()
+
                     if (now - lastSaved >= saveInterval) {
                         lastSaved = now
                         scope.launch(Dispatchers.IO) {
@@ -153,9 +174,30 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onMapReady(map: GoogleMap) {
+        googleMap = map
+    }
+
+    override fun onResume() {
+        super.onResume()
+        mapView.onResume()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        mapView.onPause()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        mapView.onDestroy()
         fusedLocationClient.removeLocationUpdates(locationCallback)
         scope.cancel()
     }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        mapView.onLowMemory()
+    }
+
 }
