@@ -25,6 +25,7 @@ class MainActivity : AppCompatActivity() {
 
     private val saveInterval = 5 * 60 * 1000L
     private var lastSaved: Long = 0
+    private var isTracking = false
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
@@ -73,12 +74,36 @@ class MainActivity : AppCompatActivity() {
         }
 
         loadSavedLocations()
+
+        binding.toggleTrackingButton.setOnClickListener {
+            if (!isTracking) {
+                startTracking()
+                binding.toggleTrackingButton.text = "Stop Tracking"
+                binding.statusText.text = "Tracking status: ACTIVE"
+                isTracking = true
+            } else {
+                stopTracking()
+                binding.toggleTrackingButton.text = "Start Tracking"
+                binding.statusText.text = "Tracking status: STOPPED"
+                isTracking = false
+            }
+        }
     }
 
     private fun startTracking() {
         val serviceIntent = Intent(this, TrackingService::class.java)
+        binding.statusText.text = "Tracking status: ACTIVE"
+        binding.toggleTrackingButton.text = "Stop Tracking"
+        isTracking = true
+
         startForegroundService(serviceIntent)
         startLocationUpdates()
+    }
+
+    private fun stopTracking() {
+        val stopIntent = Intent(this, TrackingService::class.java)
+        stopService(stopIntent)
+        fusedLocationClient.removeLocationUpdates(locationCallback)
     }
 
     private fun startLocationUpdates() {
