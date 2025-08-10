@@ -1,58 +1,53 @@
 package uk.tojoco.gpstracker
 
 import android.Manifest
-import android.content.pm.PackageManager
-import android.location.Location
-import android.os.Bundle
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import androidx.recyclerview.widget.LinearLayoutManager
-import uk.tojoco.gpstracker.data.AppDatabase
-import uk.tojoco.gpstracker.data.LocationEntity
+import androidx.navigation.findNavController
+import androidx.navigation.ui.setupWithNavController
 import uk.tojoco.gpstracker.databinding.ActivityMainBinding
-import uk.tojoco.gpstracker.ui.LocationAdapter
 import uk.tojoco.gpstracker.service.TrackingService
-import com.google.android.gms.location.*
-import kotlinx.coroutines.*
-import com.google.android.gms.maps.GoogleMap
-import com.google.android.gms.maps.MapView
-import com.google.android.gms.maps.OnMapReadyCallback
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.MarkerOptions
 
-class MainActivity : AppCompatActivity(), OnMapReadyCallback {
-
+class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
-    private lateinit var db: AppDatabase
-    private lateinit var adapter: LocationAdapter
-    private lateinit var mapView: MapView
-    private var googleMap: GoogleMap? = null
 
-    private val saveInterval = 5 * 60 * 1000L
-    private var lastSaved: Long = 0
+    // Tracks a simple local flag for whether we've requested start/stop.
+    // You may want to replace this with a more robust check (e.g. binding to the Service or checking Service state).
     private var isTracking = false
 
-    private lateinit var fusedLocationClient: FusedLocationProviderClient
-    private lateinit var locationCallback: LocationCallback
+    // A place to store an action that should run once permissions are granted
+    private var pendingPermissionAction: (() -> Unit)? = null
 
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    // Registered launcher for multiple permissions
+    private val requestPermissionsLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            val fineGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+            val fgsGranted = if (Build.VERSION.SDK_INT >= 34) {
+                permissions[Manifest.permission.FOREGROUND_SERVICE_LOCATION] ?: false
+            } else {
+                // on older API levels the foreground-service-location permission does not exist
+                true
+            }
 
-    private val requestPermissionsLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val fineGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
-        val fgsGranted = permissions[Manifest.permission.FOREGROUND_SERVICE_LOCATION] ?: false
-
-        if (fineGranted && fgsGranted) {
-            startTracking()
-        } else {
-            binding.locationText.text = "Permissions denied."
+            if (fineGranted && fgsGranted) {
+                // Run the pending action (if any)
+                pendingPermissionAction?.invoke()
+            } else {
+                Toast.makeText(
+                    this,
+                    "Permissions denied — cannot start location tracking.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            pendingPermissionAction = null
         }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,144 +55,97 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        db = AppDatabase.getDatabase(this)
+        // Setup nav controller + bottom nav
+        val navController = findNavController(R.id.nav_host_fragment)
 
-        adapter = LocationAdapter(listOf())
-        binding.locationList.layoutManager = LinearLayoutManager(this)
-        binding.locationList.adapter = adapter
+        // NOTE: Use the viewBinding property generated from your XML id.
+        // If your BottomNavigationView id is @+id/bottom_navigation then the property is binding.bottomNavigation
+        binding.bottomNavigation.setupWithNavController(navController)
 
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        // Optional: If you want to start tracking automatically if permissions already exist:
+        // if (hasTrackingPermissions()) { /* maybe startTrackingFromUI() or show UI state */ }
+    }
 
-        mapView = binding.mapView
-        mapView.onCreate(savedInstanceState)
-        mapView.getMapAsync(this)
+    /**
+     * Request tracking-related permissions if needed, then run [action].
+     * The action will be invoked immediately if permissions are already granted.
+     */
+    fun ensureTrackingPermissionsAndRun(action: () -> Unit) {
+        if (hasTrackingPermissions()) {
+            action()
+            return
+        }
 
-        if (
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED ||
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.FOREGROUND_SERVICE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissionsLauncher.launch(arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
+        // store action to run after user responds to permission dialog
+        pendingPermissionAction = action
+
+        val toRequest = mutableListOf<String>()
+        toRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (Build.VERSION.SDK_INT >= 34) {
+            // new permission on API 34+ for foreground-service location starts
+            toRequest.add(Manifest.permission.FOREGROUND_SERVICE_LOCATION)
+        }
+
+        requestPermissionsLauncher.launch(toRequest.toTypedArray())
+    }
+
+    /** Returns true if the required permissions are already granted. */
+    private fun hasTrackingPermissions(): Boolean {
+        val fineOk = ActivityCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val fgsOk = if (Build.VERSION.SDK_INT >= 34) {
+            ActivityCompat.checkSelfPermission(
+                this,
                 Manifest.permission.FOREGROUND_SERVICE_LOCATION
-            ))
+            ) == PackageManager.PERMISSION_GRANTED
         } else {
-            startTracking()
+            true
         }
 
-        loadSavedLocations()
+        return fineOk && fgsOk
+    }
 
-        binding.toggleTrackingButton.setOnClickListener {
-            if (!isTracking) {
-                startTracking()
-                binding.toggleTrackingButton.text = "Stop Tracking"
-                binding.statusText.text = "Tracking status: ACTIVE"
+    /**
+     * Public method Fragments / UI can call to start location tracking (foreground service + optional activity updates).
+     * Will request permissions if needed.
+     */
+    fun startTrackingFromUI() {
+        ensureTrackingPermissionsAndRun {
+            try {
+                val intent = Intent(this, TrackingService::class.java)
+                // startForegroundService is required for starting FGS on Android O+
+                startForegroundService(intent)
                 isTracking = true
-            } else {
-                stopTracking()
-                binding.toggleTrackingButton.text = "Start Tracking"
-                binding.statusText.text = "Tracking status: STOPPED"
-                isTracking = false
+                Toast.makeText(this, "Tracking started", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                // defensive fallback; most issues should be prevented by permissions check above
+                Toast.makeText(this, "Failed to start tracking: ${e.message}", Toast.LENGTH_LONG)
+                    .show()
             }
         }
     }
 
-    private fun startTracking() {
-        val serviceIntent = Intent(this, TrackingService::class.java)
-        binding.statusText.text = "Tracking status: ACTIVE"
-        binding.toggleTrackingButton.text = "Stop Tracking"
-        isTracking = true
-
-        startForegroundService(serviceIntent)
-        startLocationUpdates()
-    }
-
-    private fun stopTracking() {
-        val stopIntent = Intent(this, TrackingService::class.java)
-        stopService(stopIntent)
-        fusedLocationClient.removeLocationUpdates(locationCallback)
-    }
-
-    private fun startLocationUpdates() {
-        val request = LocationRequest.create().apply {
-            interval = 5000
-            fastestInterval = 2000
-            priority = LocationRequest.PRIORITY_HIGH_ACCURACY
-        }
-
-        locationCallback = object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) {
-                for (location in result.locations) {
-                    val lat = location.latitude
-                    val lng = location.longitude
-                    binding.locationText.text = "Lat: $lat, Lng: $lng"
-                    googleMap?.let { map ->
-                        val position = LatLng(lat, lng)
-                        map.clear()
-                        map.addMarker(MarkerOptions().position(position).title("Current Location"))
-                        map.moveCamera(CameraUpdateFactory.newLatLngZoom(position, 15f))
-                    }
-
-
-                    val now = System.currentTimeMillis()
-
-                    if (now - lastSaved >= saveInterval) {
-                        lastSaved = now
-                        scope.launch(Dispatchers.IO) {
-                            db.locationDao().insert(
-                                LocationEntity(latitude = lat, longitude = lng, timestamp = now)
-                            )
-                            withContext(Dispatchers.Main) {
-                                loadSavedLocations()
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
-            fusedLocationClient.requestLocationUpdates(request, locationCallback, mainLooper)
+    /**
+     * Public method to stop the tracking service. Fragments / UI should call this to stop tracking.
+     */
+    fun stopTrackingFromUI() {
+        val intent = Intent(this, TrackingService::class.java)
+        val stopped = stopService(intent)
+        isTracking = false
+        if (stopped) {
+            Toast.makeText(this, "Tracking stopped", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun loadSavedLocations() {
-        scope.launch {
-            val data = withContext(Dispatchers.IO) {
-                db.locationDao().getAll()
-            }
-            adapter = LocationAdapter(data)
-            binding.locationList.adapter = adapter
-        }
-    }
-
-    override fun onMapReady(map: GoogleMap) {
-        googleMap = map
-    }
-
-    override fun onResume() {
-        super.onResume()
-        mapView.onResume()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        mapView.onPause()
-    }
+    /** Convenience: expose whether the app believes it's tracking. */
+    fun isTracking(): Boolean = isTracking
 
     override fun onDestroy() {
         super.onDestroy()
-        mapView.onDestroy()
-        fusedLocationClient.removeLocationUpdates(locationCallback)
-        scope.cancel()
+        // clear pending action if activity dies
+        pendingPermissionAction = null
     }
-
-    override fun onLowMemory() {
-        super.onLowMemory()
-        mapView.onLowMemory()
-    }
-
 }
